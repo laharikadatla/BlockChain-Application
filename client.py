@@ -64,7 +64,7 @@ def worker( client_id, serverPublickKey ):
     for i in range(60):
         (signature, encrypt_message, message) = encrypt_and_sign_message( client_id, privateKey, serverPublickKey )
         # Sign the message using private Key
-        transaction_message = {'client_id':client_id,'message':b64encode(encrypt_message),'signature':b64encode(signature)}
+        transaction_message = {'client_id':client_id,'message':b64encode(encrypt_message).decode(),'signature':b64encode(signature).decode()}
         global serverHost
         res = requests.request(
                 "POST",
