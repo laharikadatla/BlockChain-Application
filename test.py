@@ -4,7 +4,10 @@ from client import generate_and_save_keys, encrypt_and_sign_message, c_private_k
 import os, random, time, string, json
 from base64 import b64encode, b64decode
 from unittest import mock
-from Crypto.Cipher import PKCS1_OAEP
+from nacl.public import SealedBox
+from cryptography.hazmat.primitives import serialization
+from nacl.encoding import RawEncoder
+from nacl.signing  import VerifyKey
 
 class BlockChainServerTests(unittest.TestCase):
     @classmethod
@@ -13,12 +16,15 @@ class BlockChainServerTests(unittest.TestCase):
         self.created_blocks = []
         
         # create client and server identities
-        private_key_file_path = os.getcwd() + "/keys/testing_server_private_key.pem" 
-        public_key_file_path = os.getcwd() + "/keys/testing_server_public_key.pem"
+        private_key_file_path = os.getcwd() + "/keys/testing_server_private_key.txt" 
+        public_key_file_path = os.getcwd() + "/keys/testing_server_public_key.txt"
         (self.server_priv, self.server_pub) = create_identity_and_blockchain(private_key_file_path, public_key_file_path)
         self.key_paths.append( private_key_file_path )
         self.key_paths.append( public_key_file_path )
-
+        self.server_public_bytes = self.server_pub.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
         # for now taking only one clinet
         self.client_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
         self.key_paths.append( c_private_key_file_path.format( self.client_id ) )
@@ -74,7 +80,7 @@ class BlockChainServerTests(unittest.TestCase):
     # mocking mongo collection
     @mock.patch("server.collection")
     def test_add_transactions(self, mocked_collection):
-        (signature, encrypt_message, message) = encrypt_and_sign_message(self.client_id, self.client_priv, self.server_pub)
+        (signature, encrypt_message, message) = encrypt_and_sign_message(self.client_id, self.client_priv, self.server_public_bytes)
         response = self.client.post("/add_transaction", 
                         json={'client_id':self.client_id,'message':b64encode(encrypt_message).decode(),'signature':b64encode(signature).decode()}, 
                         content_type='application/json')
@@ -83,9 +89,10 @@ class BlockChainServerTests(unittest.TestCase):
 
     @mock.patch("server.collection")
     def test_add_transactions_wrong_message(self, mocked_collection):
-        (signature, encrypt_message, message) = encrypt_and_sign_message(self.client_id, self.client_priv, self.server_pub)
-        cipher = PKCS1_OAEP.new(self.server_pub)
-        wrong_encrypt_message = cipher.encrypt(json.dumps({'from':'wromg client'}).encode('utf-8'))
+        (signature, encrypt_message, message) = encrypt_and_sign_message(self.client_id, self.client_priv, self.server_public_bytes)
+        nacl_pub = VerifyKey(key=self.server_public_bytes, encoder=RawEncoder)
+        sealed_box = SealedBox(nacl_pub.to_curve25519_public_key())
+        wrong_encrypt_message = sealed_box.encrypt(json.dumps({'from':'wrong client'}).encode('utf-8'))
         response = self.client.post("/add_transaction", 
                         json={'client_id':self.client_id,'message':b64encode(wrong_encrypt_message).decode(),'signature':b64encode(signature).decode()}, 
                         content_type='application/json')

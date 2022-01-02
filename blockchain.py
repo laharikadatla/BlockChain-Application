@@ -2,9 +2,9 @@
 import hashlib, os, json, requests
 from time import time
 from merkletree import MerkleTree
-from Crypto.Signature import PKCS1_v1_5
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ed25519
 from Crypto.Hash import SHA256
-from Crypto.PublicKey import RSA
 
 private_key = None
 MINING_DIFFICULTY = 2
@@ -24,19 +24,18 @@ class Block:
         self.hash = self.calculateHash()
     
     def calculateHash(self):
-        server_private_key = private_key if private_key else RSA.import_key( open( os.getcwd() + "/keys/server_private_key.pem", "r" ).read() )
-        signer = PKCS1_v1_5.new(server_private_key)
+        server_private_key = private_key if private_key else ed25519.Ed25519PrivateKey.from_private_bytes( open( os.getcwd() + "/keys/server_private_key.txt", "r" ).read() )
         if self.transactions :
             # calculate merkle hash and sign hash
             mtree = MerkleTree(self.transactions)
-            signed_hash = signer.sign(mtree.root.hash_obj)
+            signed_hash = server_private_key.sign(mtree.root.hash.encode('utf-8'))
             return signed_hash
         else:
             # Assuming as genesis block 
             block_string = json.dumps(self.__dict__, sort_keys=True).encode()
             digest = SHA256.new()
             digest.update(block_string)
-            signed_hash = signer.sign(digest)
+            signed_hash = server_private_key.sign(digest.hexdigest().encode('utf-8'))
             return signed_hash
 
 
@@ -101,7 +100,7 @@ class Blockchain:
         hashed_block = last_block.hash
         proof = self.proof_of_work()
         copied_transactions = self.__open_transactions[:]
-        block = Block(len(self.__chain), hashed_block,
+        block = Block(last_block.index+1, hashed_block,
                       copied_transactions, proof )
         self.__chain.append(block)
         self.__open_transactions = []

@@ -1,21 +1,21 @@
 from flask import Flask, jsonify, request, Response
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP
-from Crypto.Signature import PKCS1_v1_5
-from Crypto.Hash import SHA512, SHA384, SHA256, SHA, MD5
-from Crypto import Random
 from base64 import b64encode, b64decode
 import json
 from schema import Schema, And, Use, Optional, SchemaError
 from blockchain import Blockchain
 import os
 from pymongo import MongoClient
+from nacl.public import SealedBox
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import serialization
+from nacl.encoding import RawEncoder
+from nacl.signing  import SigningKey, VerifyKey
 
 blockchain = None
 
 # default path
-default_private_key_path = os.getcwd() + "/keys/server_private_key.pem" 
-default_public_key_path = os.getcwd() + "/keys/server_public_key.pem"
+default_private_key_path = os.getcwd() + "/keys/server_private_key.txt" 
+default_public_key_path = os.getcwd() + "/keys/server_public_key.txt"
 
 keysize = 2048
 
@@ -37,14 +37,19 @@ def create_identity_and_blockchain( private_path=None, public_path=None ):
 	server_private_path = private_path = private_path if private_path else default_private_key_path
 	global server_public_path
 	server_public_path = public_path = public_path if public_path else default_public_key_path
-	random_generator = Random.new().read
-	key = RSA.generate( keysize, random_generator )
-	private, public = key, key.publickey()
-	private_pem = private.export_key().decode()
-	public_pem = public.export_key().decode()
-	open( private_path, "w" ).write( private_pem )
-	open( public_path, "w" ).write( public_pem )
-	
+	private = ed25519.Ed25519PrivateKey.generate()
+	public = private.public_key()
+	private_bytes = private.private_bytes(
+		encoding=serialization.Encoding.Raw,
+		format=serialization.PrivateFormat.Raw,
+		encryption_algorithm=serialization.NoEncryption()
+	)
+	public_bytes = public.public_bytes(
+		encoding=serialization.Encoding.Raw,
+		format=serialization.PublicFormat.Raw
+	)
+	open( private_path, "wb" ).write( private_bytes )
+	open( public_path, "wb" ).write( public_bytes )
 	# Initialize block chain
 	global blockchain
 	blockchain = Blockchain( private ) #using the private key for signing the hash and persist signed hash in block
@@ -119,9 +124,9 @@ def add_transaction():
 		request_data = request.get_json()
 		# Decrypt Message
 		path = server_private_path if server_private_path else default_private_key_path
-		server_private_key = RSA.import_key( open( path, "r" ).read() )
-		cipher = PKCS1_OAEP.new( server_private_key )
-		decrypted_message = cipher.decrypt( b64decode( request_data['message'] ) )
+		nacl_priv_ed = SigningKey(seed=open( path, "rb" ).read(), encoder=RawEncoder)
+		sealed_box = SealedBox(nacl_priv_ed.to_curve25519_private_key())
+		decrypted_message = sealed_box.decrypt(b64decode(request_data['message']))
 		validation = validate_request( decrypted_message, request_data )
 		if validation:
 			# add transaction to mongodb
@@ -172,11 +177,6 @@ def create_block( block_messages ):
 	blockchain.add_open_transactions(block_messages)
 	return blockchain.mine_block()
 
-def verify( message, signature, pub_key ):
-	signer = PKCS1_v1_5.new(pub_key)
-	digest = SHA512.new() #By default considering 512 hash for now
-	digest.update(message)
-	return signer.verify(digest, signature)
 
 def validate_request( decrypted_message, request_data ):
 	# Validate message schema
@@ -190,9 +190,10 @@ def validate_request( decrypted_message, request_data ):
 		return False
 		
 	# Validate signature and check came from correct client
-	client_public_key = RSA.import_key( open( os.getcwd() + "/keys/client-" + request_data['client_id'] + "_public_key.pem","r" ).read() )
-	verifySig = verify( decrypted_message, b64decode( request_data['signature'] ), client_public_key)
-	if not verifySig:
+	client_public_key = ed25519.Ed25519PublicKey.from_public_bytes( open( os.getcwd() + "/keys/client-" + request_data['client_id'] + "_public_key.txt","rb" ).read() )
+	try:
+		verifySig = client_public_key.verify( b64decode( request_data['signature'] ), decrypted_message )
+	except Exception as e:
 		return False
 	return True
 
